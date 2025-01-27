@@ -2,11 +2,6 @@
 #### BIG DATA CUP #######
 
 
-library(dplyr)
-#install.packages("signal")
-library(signal)  # For Savitzky-Golay filtering
-#install.packages("pracma")
-library(pracma)
 
 camera_angles <- read.csv("camera_orientations.csv", header = TRUE, sep = ",")
 
@@ -47,15 +42,6 @@ game1_shifts <- rbind(gameH_shifts,gameD_shifts,gameF_shifts)
 game1_events <- rbind(gameH_events,gameD_events,gameF_events)
 
 
-# 
-# players_on_teams <- game1_shifts%>%
-#   reframe(game_id, team_name,Player_Id)%>%
-#   distinct(team_name,Player_Id,.keep_all = TRUE)%>%
-#   dplyr::filter(Player_Id != "Go")
-# 
-# 
-# game_1_tracking <- left_join(game1_tracking, players_on_teams, by = c("game_id"= "game_id", 
-#                                                                       "Player.Id" = "Player_Id"))
 
 game1_tracking_time <- game1_tracking%>%
   separate(Game.Clock, into = c("minutes", "seconds"), sep = ":",remove = FALSE) %>%
@@ -118,181 +104,7 @@ filter(Player.or.Puck != "Puck" )%>%
   
   
 
-game1_tracking_time <- game1_tracking_time %>%
-  # filter(Player.Id != "Go") %>%           # Remove rows where Player.Id is "Go"
-  # filter(Player.or.Puck != "Puck") %>%     # Remove rows where Player.or.Puck is "Puck"
-  # filter(!(is.na(Player.Id) | Player.Id == "")) %>%  # Remove rows with missing or blank Player.Id
-  group_by(Player.Id, time_in_seconds) %>%  # Group by Player.Id and time_in_seconds
-  slice(1) %>%                            # Keep the first row for each group
-  ungroup() %>%                           # Ungroup the data after slicing
-  arrange(Period, -time_in_seconds)  
 
-
-
-
-
-
-
-
-
-
-
-
-
-analyze_change_of_direction <- function(game1_tracking_time) {
-  # Check if required columns exist
-  if (!all(c("Player.Id", "Rink.Location.X..Feet.", "Rink.Location.Y..Feet.", "time_in_seconds") %in% names(game1_tracking_time))) {
-    stop("The dataset must contain 'Player.Id', 'Rink.Location.X..Feet.', 'Rink.Location.Y..Feet.', and 'time_in_seconds' columns.")
-  }
-  
-  # Create a column for shifts based on Player.Id and a 5-second gap
-  game1_tracking_time <- game1_tracking_time %>%
-    arrange(Player.Id, Period, time_in_seconds) %>%
-    group_by(Player.Id) %>%
-    mutate(
-      shift_id = cumsum(c(TRUE, diff(time_in_seconds) > 5))
-    ) %>%
-    ungroup()
-  
-  # Analyze metrics per shift and player
-  metrics_by_shift <- game1_tracking_time %>%
-    group_by(Player.Id, shift_id) %>%
-    summarise(
-      significant_changes = {
-        dx <- diff(Rink.Location.X..Feet.)
-        dy <- diff(Rink.Location.Y..Feet.)
-        angles <- atan2(dy, dx)
-        angle_changes <- abs(diff(angles))
-        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
-        sum(angle_changes > pi / 4, na.rm = TRUE)
-      },
-      avg_direction_change = {
-        dx <- diff(Rink.Location.X..Feet.)
-        dy <- diff(Rink.Location.Y..Feet.)
-        angles <- atan2(dy, dx)
-        angle_changes <- abs(diff(angles))
-        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
-        mean(angle_changes, na.rm = TRUE)
-      },
-      max_angular_velocity = {
-        dx <- diff(Rink.Location.X..Feet.)
-        dy <- diff(Rink.Location.Y..Feet.)
-        angles <- atan2(dy, dx)
-        angle_changes <- abs(diff(angles))
-        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
-        max(angle_changes, na.rm = TRUE)
-      },
-      agility_score = {
-        dx <- diff(Rink.Location.X..Feet.)
-        dy <- diff(Rink.Location.Y..Feet.)
-        velocity <- sqrt(dx^2 + dy^2)
-        angles <- atan2(dy, dx)
-        angle_changes <- abs(diff(angles))
-        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
-        mean(velocity[-1] * angle_changes, na.rm = TRUE)
-      },
-      movement_smoothness = {
-        dx <- diff(Rink.Location.X..Feet.)
-        dy <- diff(Rink.Location.Y..Feet.)
-        velocity <- sqrt(dx^2 + dy^2)
-        acceleration <- diff(velocity)
-        jerk <- diff(acceleration, na.rm = TRUE)
-        -log(mean(jerk^2, na.rm = TRUE) + 1e-10)
-      },
-      .groups = "drop"  # Ungroup after summarising
-    ) %>%
-    ungroup()
-  
-  return(metrics_by_shift)
-}
-
-
-
-
-
-
-metrics <- analyze_change_of_direction(game1_tracking_time)
-
-
-
-
-
-
-
-
-
-
-
-analyze_change_of_direction <- function(game1_tracking_time) {
-  # Check if required columns exist
-  if (!all(c("Player.Id", "Rink.Location.X..Feet.", "Rink.Location.Y..Feet.", "time_in_seconds") %in% names(game1_tracking_time))) {
-    stop("The dataset must contain 'Player.Id', 'Rink.Location.X..Feet.', 'Rink.Location.Y..Feet.', and 'time_in_seconds' columns.")
-  }
-  
-  # Create a column for shifts based on Player.Id and a 5-second gap
-  game1_tracking_time <- game1_tracking_time %>%
-    arrange(Player.Id, Period, desc(time_in_seconds)) %>%  # Ensure sorting accounts for descending time
-    group_by(Player.Id) %>%
-    mutate(
-      shift_id = cumsum(c(TRUE, abs(diff(time_in_seconds)) > 5))  # Use absolute differences for proper grouping
-    ) %>%
-    ungroup()
-  
-  # Analyze metrics per shift and player
-  metrics_by_shift <- game1_tracking_time %>%
-    group_by(Player.Id, shift_id) %>%
-    summarise(
-      significant_changes = {
-        dx <- diff(Rink.Location.X..Feet.)
-        dy <- diff(Rink.Location.Y..Feet.)
-        angles <- atan2(dy, dx)
-        angle_changes <- abs(diff(angles))
-        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
-        sum(angle_changes > pi / 4, na.rm = TRUE)
-      },
-      avg_direction_change = {
-        dx <- diff(Rink.Location.X..Feet.)
-        dy <- diff(Rink.Location.Y..Feet.)
-        angles <- atan2(dy, dx)
-        angle_changes <- abs(diff(angles))
-        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
-        mean(angle_changes, na.rm = TRUE)
-      },
-      max_angular_velocity = {
-        dx <- diff(Rink.Location.X..Feet.)
-        dy <- diff(Rink.Location.Y..Feet.)
-        angles <- atan2(dy, dx)
-        angle_changes <- abs(diff(angles))
-        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
-        max(angle_changes, na.rm = TRUE)
-      },
-      agility_score = {
-        dx <- diff(Rink.Location.X..Feet.)
-        dy <- diff(Rink.Location.Y..Feet.)
-        velocity <- sqrt(dx^2 + dy^2)
-        angles <- atan2(dy, dx)
-        angle_changes <- abs(diff(angles))
-        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
-        mean(velocity[-1] * angle_changes, na.rm = TRUE)
-      },
-      movement_smoothness = {
-        dx <- diff(Rink.Location.X..Feet.)
-        dy <- diff(Rink.Location.Y..Feet.)
-        velocity <- sqrt(dx^2 + dy^2)
-        acceleration <- diff(velocity)
-        jerk <- diff(acceleration, na.rm = TRUE)
-        -log(mean(jerk^2, na.rm = TRUE) + 1e-10)
-      },
-      .groups = "drop"  # Ungroup after summarising
-    ) %>%
-    ungroup()
-  
-  return(metrics_by_shift)
-}
-
-
-
-metrics_by_shift <- analyze_change_of_direction(game1_tracking_time)
 
 
 
@@ -817,49 +629,6 @@ ggplot(data_long, aes(x = stat, y = value)) +
   theme(plot.title = element_text(size = 30, face = "bold", hjust = 0.5)) +
   theme(plot.subtitle = element_text(size = 20, hjust = 0.5))
 
-
-# # Create plot
-# ggplot(data_long, aes(x = stat, y = value)) +
-#   geom_jitter(aes(color = highlighted, size = highlighted, alpha = highlighted),
-#               width = 0.2) +
-#   scale_color_manual(values = c("grey50", "red")) +
-#   scale_size_manual(values = c(2, 8)) +
-#   scale_alpha_manual(values = c(0.5, 1)) +
-#   # theme_minimal() +
-#   theme(legend.position = "right", 
-#         panel.grid.minor = element_blank(),
-#         plot.background = element_rect(fill = "#141622"),
-#         panel.background = element_rect(fill = "#141622", 
-#                                         colour = "#141622",
-#                                         linewidth = 2, 
-#                                         linetype = "solid"),
-#         panel.grid.major = element_line(size = 0.5, 
-#                                         linetype = 'solid',
-#                                         color = "gray"),
-#         axis.title.x = element_text(size = 22, 
-#                                     face = "bold", 
-#                                     color = "white"),
-#         axis.title.y = element_text(size = 22, 
-#                                     face = "bold", 
-#                                     colour = "white"),
-#         axis.text.x = element_text(color = "white", size = 22),
-#         axis.text.y = element_text(color = "white", size = 22),
-#         plot.title = element_text(face = "bold", 
-#                                   colour = "white", 
-#                                   size = 14),
-#         plot.subtitle = element_text(colour = "white", 
-#                                      size = 10),
-#         plot.caption = element_text(colour = "white", 
-#                                     size = 10),
-#         plot.caption.position = "plot")+
-#   theme(legend.position = "none",
-#         axis.text.x = element_text(angle = 45, hjust = 1)) +
-#   labs(x = "",
-#        y = "Normalized Value",
-#        title = "Advanced Skating Report",
-#        subtitle = "Player 10 on Team H") +
-#   theme(plot.title = element_text(size = 30, face = "bold", hjust = 0.5))+
-#   theme(plot.subtitle = element_text(size = 20, hjust = 0.5))
 
 }
 
