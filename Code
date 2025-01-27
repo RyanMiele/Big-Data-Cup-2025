@@ -1,0 +1,868 @@
+
+#### BIG DATA CUP #######
+
+
+library(dplyr)
+#install.packages("signal")
+library(signal)  # For Savitzky-Golay filtering
+#install.packages("pracma")
+library(pracma)
+
+camera_angles <- read.csv("camera_orientations.csv", header = TRUE, sep = ",")
+
+gameH_tracking <- read.csv("2024-10-25.Team.H.@.Team.G.-.Tracking.csv", header = TRUE, sep = ",")%>%
+  mutate(game_id = "HG",
+         team_name = if_else(Team =="Home", "Team G", "Team H"))
+gameH_shifts <- read.csv("2024-10-25.Team.H.@.Team.G.-.Shifts.csv", header = TRUE, sep = ",")%>%
+  mutate(game_id = "HG")
+gameH_events <- read.csv("2024-10-25.Team.H.@.Team.G.-.Events.csv", header = TRUE, sep = ",")%>%
+  mutate(game_id = "HG")
+
+
+gameD_tracking <- read.csv("2024-11-15.Team.D.@.Team.C.-.Tracking.csv", header = TRUE, sep = ",")%>%
+  mutate(game_id = "DC",
+         team_name = if_else(Team =="Home", "Team C", "Team D"))
+gameD_shifts <- read.csv("2024-11-15.Team.D.@.Team.C.-.Shifts.csv", header = TRUE, sep = ",")%>%
+  mutate(game_id = "DC")
+gameD_events <- read.csv("2024-11-15.Team.D.@.Team.C.-.Events.csv", header = TRUE, sep = ",")%>%
+  mutate(game_id = "DC")
+
+
+gameF_tracking <- read.csv("2024-11-16.Team.F.@.Team.E.-.Tracking.csv", header = TRUE, sep = ",")%>%
+  mutate(game_id = "FE",
+         team_name = if_else(Team =="Home", "Team E", "Team F"))
+gameF_shifts <- read.csv("2024-11-16.Team.F.@.Team.E.-.Shifts.csv", header = TRUE, sep = ",")%>%
+  mutate(game_id = "FE")
+gameF_events <- read.csv("2024-11-16.Team.F.@.Team.E.-.Events.csv", header = TRUE, sep = ",")%>%
+  mutate(game_id = "FE")
+
+
+
+names(game1_tracking)
+
+
+
+game1_tracking<- rbind(gameH_tracking,gameD_tracking,gameF_tracking)
+game1_shifts <- rbind(gameH_shifts,gameD_shifts,gameF_shifts)
+game1_events <- rbind(gameH_events,gameD_events,gameF_events)
+
+
+# 
+# players_on_teams <- game1_shifts%>%
+#   reframe(game_id, team_name,Player_Id)%>%
+#   distinct(team_name,Player_Id,.keep_all = TRUE)%>%
+#   dplyr::filter(Player_Id != "Go")
+# 
+# 
+# game_1_tracking <- left_join(game1_tracking, players_on_teams, by = c("game_id"= "game_id", 
+#                                                                       "Player.Id" = "Player_Id"))
+
+game1_tracking_time <- game1_tracking%>%
+  separate(Game.Clock, into = c("minutes", "seconds"), sep = ":",remove = FALSE) %>%
+  mutate(minutes = as.numeric(minutes),
+         seconds = as.numeric(seconds),
+         time_in_seconds = minutes * 60 + seconds) %>%
+  select(-minutes, -seconds)
+
+
+
+
+
+game1_events_time <- game1_events%>%
+  separate(Clock, into = c("minutes", "seconds"), sep = ":",remove = FALSE) %>%
+  mutate(minutes = as.numeric(minutes),
+         seconds = as.numeric(seconds),
+         time_in_seconds = minutes * 60 + seconds) %>%
+  select(-minutes, -seconds)
+
+
+
+game1_shifts_time <- game1_shifts%>%
+  dplyr::filter(Player_Id != "Go")%>%
+  separate(start_clock, into = c("minutes", "seconds"), sep = ":",remove = FALSE) %>%
+  mutate(minutes = as.numeric(minutes),
+         seconds = as.numeric(seconds),
+         start_time_in_seconds = minutes * 60 + seconds) %>%
+  select(-minutes, -seconds)%>%
+  separate(end_clock, into = c("minutes", "seconds"), sep = ":",remove = FALSE) %>%
+  mutate(minutes = as.numeric(minutes),
+         seconds = as.numeric(seconds),
+         end_time_in_seconds = minutes * 60 + seconds) %>%
+  select(-minutes, -seconds)
+
+
+
+
+
+game1_tracking_time <- game1_tracking_time%>%
+  filter(complete.cases(.))
+  filter(Player.Id != "Go")%>%
+filter(Player.or.Puck != "Puck" )%>%
+  filter(!(is.na(Player.Id) | Player.Id == ""))%>%
+  group_by(Player.Id, time_in_seconds) %>%
+  slice(1) %>%  # Keep the first row for each player and second
+  ungroup()%>%
+  arrange(Period, -time_in_seconds)
+
+
+
+
+  
+  
+  game1_tracking_time <- game1_tracking_time[complete.cases(game1_tracking_time), ]
+  game1_tracking_time <- game1_tracking_time[!(is.na(game1_tracking_time$Player.Id) | game1_tracking_time$Player.Id == ""), ]
+  
+  game1_tracking_time <- game1_tracking_time[game1_tracking_time$Player.Id != "Go", ]
+  
+  
+  
+  
+
+game1_tracking_time <- game1_tracking_time %>%
+  # filter(Player.Id != "Go") %>%           # Remove rows where Player.Id is "Go"
+  # filter(Player.or.Puck != "Puck") %>%     # Remove rows where Player.or.Puck is "Puck"
+  # filter(!(is.na(Player.Id) | Player.Id == "")) %>%  # Remove rows with missing or blank Player.Id
+  group_by(Player.Id, time_in_seconds) %>%  # Group by Player.Id and time_in_seconds
+  slice(1) %>%                            # Keep the first row for each group
+  ungroup() %>%                           # Ungroup the data after slicing
+  arrange(Period, -time_in_seconds)  
+
+
+
+
+
+
+
+
+
+
+
+
+
+analyze_change_of_direction <- function(game1_tracking_time) {
+  # Check if required columns exist
+  if (!all(c("Player.Id", "Rink.Location.X..Feet.", "Rink.Location.Y..Feet.", "time_in_seconds") %in% names(game1_tracking_time))) {
+    stop("The dataset must contain 'Player.Id', 'Rink.Location.X..Feet.', 'Rink.Location.Y..Feet.', and 'time_in_seconds' columns.")
+  }
+  
+  # Create a column for shifts based on Player.Id and a 5-second gap
+  game1_tracking_time <- game1_tracking_time %>%
+    arrange(Player.Id, Period, time_in_seconds) %>%
+    group_by(Player.Id) %>%
+    mutate(
+      shift_id = cumsum(c(TRUE, diff(time_in_seconds) > 5))
+    ) %>%
+    ungroup()
+  
+  # Analyze metrics per shift and player
+  metrics_by_shift <- game1_tracking_time %>%
+    group_by(Player.Id, shift_id) %>%
+    summarise(
+      significant_changes = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        sum(angle_changes > pi / 4, na.rm = TRUE)
+      },
+      avg_direction_change = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        mean(angle_changes, na.rm = TRUE)
+      },
+      max_angular_velocity = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        max(angle_changes, na.rm = TRUE)
+      },
+      agility_score = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        velocity <- sqrt(dx^2 + dy^2)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        mean(velocity[-1] * angle_changes, na.rm = TRUE)
+      },
+      movement_smoothness = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        velocity <- sqrt(dx^2 + dy^2)
+        acceleration <- diff(velocity)
+        jerk <- diff(acceleration, na.rm = TRUE)
+        -log(mean(jerk^2, na.rm = TRUE) + 1e-10)
+      },
+      .groups = "drop"  # Ungroup after summarising
+    ) %>%
+    ungroup()
+  
+  return(metrics_by_shift)
+}
+
+
+
+
+
+
+metrics <- analyze_change_of_direction(game1_tracking_time)
+
+
+
+
+
+
+
+
+
+
+
+analyze_change_of_direction <- function(game1_tracking_time) {
+  # Check if required columns exist
+  if (!all(c("Player.Id", "Rink.Location.X..Feet.", "Rink.Location.Y..Feet.", "time_in_seconds") %in% names(game1_tracking_time))) {
+    stop("The dataset must contain 'Player.Id', 'Rink.Location.X..Feet.', 'Rink.Location.Y..Feet.', and 'time_in_seconds' columns.")
+  }
+  
+  # Create a column for shifts based on Player.Id and a 5-second gap
+  game1_tracking_time <- game1_tracking_time %>%
+    arrange(Player.Id, Period, desc(time_in_seconds)) %>%  # Ensure sorting accounts for descending time
+    group_by(Player.Id) %>%
+    mutate(
+      shift_id = cumsum(c(TRUE, abs(diff(time_in_seconds)) > 5))  # Use absolute differences for proper grouping
+    ) %>%
+    ungroup()
+  
+  # Analyze metrics per shift and player
+  metrics_by_shift <- game1_tracking_time %>%
+    group_by(Player.Id, shift_id) %>%
+    summarise(
+      significant_changes = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        sum(angle_changes > pi / 4, na.rm = TRUE)
+      },
+      avg_direction_change = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        mean(angle_changes, na.rm = TRUE)
+      },
+      max_angular_velocity = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        max(angle_changes, na.rm = TRUE)
+      },
+      agility_score = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        velocity <- sqrt(dx^2 + dy^2)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        mean(velocity[-1] * angle_changes, na.rm = TRUE)
+      },
+      movement_smoothness = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        velocity <- sqrt(dx^2 + dy^2)
+        acceleration <- diff(velocity)
+        jerk <- diff(acceleration, na.rm = TRUE)
+        -log(mean(jerk^2, na.rm = TRUE) + 1e-10)
+      },
+      .groups = "drop"  # Ungroup after summarising
+    ) %>%
+    ungroup()
+  
+  return(metrics_by_shift)
+}
+
+
+
+metrics_by_shift <- analyze_change_of_direction(game1_tracking_time)
+
+
+
+
+
+
+
+
+analyze_change_of_direction <- function(game1_tracking_time) {
+  # Check if required columns exist
+  if (!all(c("Player.Id", "Rink.Location.X..Feet.", "Rink.Location.Y..Feet.", "time_in_seconds") %in% names(game1_tracking_time))) {
+    stop("The dataset must contain 'Player.Id', 'Rink.Location.X..Feet.', 'Rink.Location.Y..Feet.', and 'time_in_seconds' columns.")
+  }
+  
+  # Create a column for shifts based on Player.Id and a 5-second gap
+  game1_tracking_time <- game1_tracking_time %>%
+    arrange(team_name,Player.Id, Period, desc(time_in_seconds)) %>%  # Sort by descending time
+    group_by(Team,Player.Id) %>%
+    mutate(
+      shift_id = cumsum(c(TRUE, abs(diff(time_in_seconds)) > 5))  # Create shift groups based on 5-second gaps
+    ) %>%
+    ungroup()
+  
+  # Analyze metrics per shift
+  metrics_by_shift <- game1_tracking_time %>%
+    group_by(team_name,Player.Id, shift_id) %>%
+    summarise(
+      significant_changes = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        sum(angle_changes > pi / 4, na.rm = TRUE)
+      },
+      avg_direction_change = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        mean(angle_changes, na.rm = TRUE)
+      },
+      max_angular_velocity = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        max(angle_changes, na.rm = TRUE)
+      },
+      agility_score = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        velocity <- sqrt(dx^2 + dy^2)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        mean(velocity[-1] * angle_changes, na.rm = TRUE)
+      },
+      movement_smoothness = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        velocity <- sqrt(dx^2 + dy^2)
+        acceleration <- diff(velocity)
+        jerk <- diff(acceleration, na.rm = TRUE)
+        -log(mean(jerk^2, na.rm = TRUE) + 1e-10)
+      },
+      .groups = "drop"  # Ungroup after summarising
+    ) %>%
+    ungroup()
+  
+  # Calculate averages across all shifts for each player
+  metrics_by_player <- metrics_by_shift %>%
+    group_by(team_name,Player.Id) %>%
+    summarise(
+      avg_significant_changes = mean(significant_changes, na.rm = TRUE),
+      avg_direction_change = mean(avg_direction_change, na.rm = TRUE),
+      max_angular_velocity = max(max_angular_velocity, na.rm = TRUE),
+      avg_agility_score = mean(agility_score, na.rm = TRUE),
+      avg_movement_smoothness = mean(movement_smoothness, na.rm = TRUE),
+      .groups = "drop"  # Ungroup after summarising
+    )
+  
+  return(metrics_by_player)
+}
+
+
+player_metrics <- analyze_change_of_direction(game1_tracking_time)
+
+
+
+
+
+
+
+
+calculate_direction_change_recovery <- function(game1_tracking_time) {
+  # Check if required columns exist
+  if (!all(c("Player.Id", "Period", "time_in_seconds", "Rink.Location.X..Feet.", "Rink.Location.Y..Feet.") %in% names(game1_tracking_time))) {
+    stop("The dataset must contain 'Player.Id', 'Period', 'time_in_seconds', 'Rink.Location.X..Feet.', and 'Rink.Location.Y..Feet.' columns.")
+  }
+  
+  # Calculate Direction Change Recovery Time for each player
+  recovery_metrics <- game1_tracking_time %>%
+    arrange(Period, desc(time_in_seconds)) %>%  # Sort for decreasing time
+    group_by(team_name,Player.Id) %>%
+    summarise(
+      direction_change_recovery_time = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        velocities <- sqrt(dx^2 + dy^2)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        
+        significant_changes <- which(angle_changes > pi / 4)  # Index of significant angular shifts
+        
+        recovery_times <- numeric(length(significant_changes))
+        
+        for (i in seq_along(significant_changes)) {
+          idx <- significant_changes[i]
+          initial_velocity <- velocities[idx]
+          
+          # Find the next time where velocity recovers to 90% of initial velocity
+          recovery_idx <- idx + which(velocities[(idx + 1):length(velocities)] >= 0.9 * initial_velocity)[1]
+          if (!is.na(recovery_idx) && recovery_idx <= length(game1_tracking_time$time_in_seconds)) {
+            recovery_times[i] <- game1_tracking_time$time_in_seconds[idx] - game1_tracking_time$time_in_seconds[recovery_idx]
+          } else {
+            recovery_times[i] <- NA  # No recovery observed
+          }
+        }
+        
+        mean(recovery_times, na.rm = TRUE)  # Average recovery time for the player
+      },
+      recovery_time_90deg_75percent = {
+        dx <- diff(Rink.Location.X..Feet.)
+        dy <- diff(Rink.Location.Y..Feet.)
+        velocities <- sqrt(dx^2 + dy^2)
+        angles <- atan2(dy, dx)
+        angle_changes <- abs(diff(angles))
+        angle_changes <- pmin(angle_changes, 2 * pi - angle_changes)
+        
+        significant_changes <- which(angle_changes > pi / 2)  # Over 90° angular shifts
+        
+        recovery_times <- numeric(length(significant_changes))
+        
+        for (i in seq_along(significant_changes)) {
+          idx <- significant_changes[i]
+          initial_velocity <- velocities[idx]
+          
+          # Find the next time where velocity recovers to 75% of initial velocity
+          recovery_idx <- idx + which(velocities[(idx + 1):length(velocities)] >= 0.75 * initial_velocity)[1]
+          if (!is.na(recovery_idx) && recovery_idx <= length(game1_tracking_time$time_in_seconds)) {
+            recovery_times[i] <- game1_tracking_time$time_in_seconds[idx] - game1_tracking_time$time_in_seconds[recovery_idx]
+          } else {
+            recovery_times[i] <- NA  # No recovery observed
+          }
+        }
+        
+        mean(recovery_times, na.rm = TRUE)  # Average recovery time for the player
+      },
+      .groups = "drop"
+    )
+  
+  return(recovery_metrics)
+}
+
+# Run the function
+recovery_metrics <- calculate_direction_change_recovery(game1_tracking_time)
+
+
+
+
+
+
+
+
+MDES <- game1_tracking_time %>% 
+  group_by(team_name, Player.Id) %>% 
+  arrange(Period, -time_in_seconds) %>% 
+  mutate(
+    # Calculate changes in position
+    delta_x = c(NA, diff(Rink.Location.X..Feet.)),
+    delta_y = c(NA, diff(Rink.Location.Y..Feet.)),
+    
+    # Calculate angles based on position differences
+    angle = atan2(delta_y, delta_x),
+    angle_change = c(NA, diff(angle)),
+    
+    # Filter for significant direction changes (greater than 45 degrees)
+    significant_changes = ifelse(abs(angle_change) > pi/4, abs(angle_change), NA),
+    
+    # Calculate velocity
+    velocity = sqrt(delta_x^2 + delta_y^2),
+    
+    # Calculate MDES for significant direction changes
+    MDES = mean(velocity[!is.na(significant_changes)] * significant_changes, na.rm = TRUE)
+  )
+
+# To calculate MDES for each player, summarise the result
+mdes_results <- MDES %>% 
+  group_by(team_name, Player.Id) %>%
+  summarise(MDES = mean(MDES, na.rm = TRUE))
+
+
+
+
+
+
+
+
+AFC <- game1_tracking_time %>% 
+  group_by(team_name, Player.Id) %>% 
+  arrange(Period, -time_in_seconds) %>% 
+  mutate(
+    # Calculate changes in position
+    delta_x = c(NA, diff(Rink.Location.X..Feet.)),
+    delta_y = c(NA, diff(Rink.Location.Y..Feet.)),
+    
+    # Calculate angles based on position differences
+    angle = atan2(delta_y, delta_x),
+    angle_change = c(NA, diff(angle))  # Calculate angle change between consecutive positions
+  ) %>%
+  # Now, calculate mean angle change and segment data
+  mutate(
+    # Calculate mean of absolute angle changes per segment
+    mean_angle_change = mean(abs(angle_change), na.rm = TRUE),
+    # Segment data into intervals based on time (e.g., 500 frames per segment)
+    time_interval = floor(time_in_seconds / 500)
+  )
+
+# To calculate AFC for each player, summarise the result
+afc_results <- AFC %>% 
+  group_by(team_name, Player.Id) %>%
+  summarise(AFC = mean(mean_angle_change, na.rm = TRUE))
+
+
+
+
+
+combined <- left_join(player_metrics,recovery_metrics, by = c("team_name", "Player.Id"))
+
+
+combined2 <- left_join(combined,mdes_results, by = c("team_name", "Player.Id"))
+
+combined_metrics <- left_join(combined2,afc_results, by = c("team_name", "Player.Id"))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## XGOALS MODEL
+
+library(dplyr)
+
+game1_events_time$x_abs = abs(game1_events_time$X_Coordinate)
+game1_events_time$y_abs = abs(game1_events_time$Y_Coordinate)
+
+str(game1_events)
+unique(game1_events$Event)
+class(game1_events)
+head(game1_events)
+
+
+shots_cleaning <- game1_events_time[(game1_events_time$Event == "Shot" | game1_events_time$Event == "Goal"), ]
+
+
+
+
+
+shots_cleaning <- shots_cleaning%>%
+  mutate(shot_angle = (asin(y_abs/sqrt((87.95 - x_abs)^2 + y_abs^2))*180)/ 3.14,
+         shot_distance = sqrt((87.95 - x_abs)^2 + y_abs^2),
+         is_goal = if_else(Event == "Goal",1,0),
+         strength_state = if_else(Team == Home_Team, Home_Team_Skaters - Away_Team_Skaters,
+                                                    Away_Team_Skaters - Home_Team_Skaters))
+
+
+shots_cleaning$Detail_1<- as.factor(shots_cleaning$Detail_1)
+shots_cleaning$strength_state<- as.factor(shots_cleaning$strength_state)
+
+xGmodel <- glm(is_goal ~ shot_distance + 
+                 shot_angle + Detail_1 + 
+                 strength_state,
+               data = shots_cleaning, 
+               family = binomial(link = 'logit'))
+
+
+
+shots_cleaning$xG <- predict(xGmodel, shots_cleaning, type = "response")
+options(scipen = 999)
+
+
+
+
+
+
+
+# Ensure column names match
+# shots_cleaning has columns: xG, Period, time_in_seconds, team
+# game1_shifts_time has columns: Player.Id, Period, start_time, end_time
+
+
+
+# Join to match players on the ice for each xG event
+xg_with_players <- shots_cleaning %>%
+  rowwise() %>%
+  mutate(players_on_ice = list(
+    game1_shifts_time %>%
+      dplyr::filter(
+        period == Period & 
+          time_in_seconds <= start_time_in_seconds & 
+          time_in_seconds >= end_time_in_seconds
+      ) %>%
+      pull(Player_Id)
+  )) %>%
+  ungroup()
+
+
+
+
+# Find the max number of players on the ice
+max_players <- max(sapply(xg_with_players$players_on_ice, length))  # Find max number of players
+
+# Dynamically create columns for each player
+xg_with_players <- xg_with_players %>%
+  mutate(
+    player_columns = map(players_on_ice, ~ {
+      # Create a vector of player IDs and pad with NA if needed
+      players <- c(.x, rep(NA, max_players - length(.x)))
+      setNames(players, paste0("Player_", seq_along(players)))  # Assign player names dynamically
+    })
+  ) %>%
+  unnest_wider(player_columns)%>%  # Unnest to separate columns for each player
+  select(-Player_11,-Player_12)
+
+
+
+
+players_on_teams <- game1_shifts%>%
+  reframe(team_name,Player_Id)%>%
+  distinct(team_name,Player_Id,.keep_all = TRUE)%>%
+  dplyr::filter(Player_Id != "Go")
+
+
+# Join to get the team names for each player
+xg_with_players_long <- xg_with_players %>%
+  # Gather Player_1 to Player_10 into a long format
+  gather(key = "Player_Position", value = "Player_Id", Player_1:Player_10) %>%
+  # Join with the player_team dataframe to get the team_name for each player
+  left_join(players_on_teams, by = "Player_Id") %>%
+  # Determine xG For and xG Against based on team match
+  mutate(xG_matching = if_else(team_name == Team, "xG For", "xG Against")) %>%
+  # Optional: Drop the Player_Position column if not needed
+  select(-Player_Position)
+
+
+xg_summaries <- xg_with_players_long %>%
+  group_by(Player_Id, team_name, xG_matching) %>%
+  summarise(total_xG = sum(xG, na.rm = TRUE), .groups = "drop") %>%
+  spread(xG_matching, total_xG, fill = 0) %>%  # Convert "xG For" and "xG Against" into columns
+  rename(xG_For = `xG For`, xG_Against = `xG Against`)%>%
+  mutate(xG_pct = xG_For / (xG_For + xG_Against))
+
+
+metrics_with_xg <- left_join(combined_metrics,xg_summaries, by = c("team_name", "Player.Id" = "Player_Id"))
+
+metrics_with_xg <- metrics_with_xg%>%
+  dplyr::filter(!is.na(xG_For))
+
+names(metrics_with_xg)
+
+cor.test(metrics_with_xg$recovery_time_90deg_75percent, metrics_with_xg$xG_Against, 
+         method = "pearson")
+
+
+
+
+
+
+
+metric_chart <- tibble(
+  Category = c("Multi-Directional Explosiveness", "Small Direction Change Recov", "Agility Score", "Angular Fatigue","Large Direction Change Recov"),
+  Correlation = c("0.212 ","0.155","0.138","0.131", "0.017"))
+
+
+metric_chart <- metric_chart%>%
+  mutate_at(c("Correlation"), as.numeric)
+
+
+ggplot(metric_chart,aes(x = Correlation, y = fct_reorder(Category, Correlation))) +
+  #geom_col(aes(x = Correlation, y = fct_reorder(Category, -Correlation)),fill = "steelblue2",color="black") +
+  theme_minimal() +
+  #scale_x_reverse() +
+  geom_bar(stat = "identity",fill = "white",color="steelblue2",width = .75,linewidth = 2) +
+  geom_text(aes(label = Correlation), hjust = 1.1,color = "#141622",size = 7) +
+  theme(legend.position = "right", 
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = "#141622"),
+        panel.background = element_rect(fill = "#141622", 
+                                        colour = "#141622",
+                                        linewidth = 2, 
+                                        linetype = "solid"),
+        panel.grid.major = element_line(size = 0.5, 
+                                        linetype = 'solid',
+                                        color = "gray"),
+        axis.title.x = element_text(size = 22, 
+                                    face = "bold", 
+                                    color = "white"),
+        axis.title.y = element_text(size = 22, 
+                                    face = "bold", 
+                                    colour = "white"),
+        axis.text.x = element_text(color = "white", size = 22),
+        axis.text.y = element_text(color = "white", size = 22),
+        plot.title = element_text(face = "bold", 
+                                  colour = "white", 
+                                  size = 14),
+        plot.subtitle = element_text(colour = "white", 
+                                     size = 10),
+        plot.caption = element_text(colour = "white", 
+                                    size = 10),
+        plot.caption.position = "plot")+
+  labs(x = "Correlation",
+       y = "",
+       title = "Correlation Between Skating Metrics and xG%")+
+  theme(plot.title = element_text(size = 30, face = "bold", hjust = 0.5))+
+  theme(plot.subtitle = element_text(size = 20, hjust = 0.5))
+
+
+
+
+
+jitter <- metrics_with_xg%>%
+  mutate(across(
+    .cols = where(is.numeric) & !matches("Player.Id"), # Select numeric columns excluding Player.Id
+    .fns = ~ (.-min(.)) / (max(.) - min(.))))%>%
+  mutate(avg_score = (MDES + direction_change_recovery_time + recovery_time_90deg_75percent +
+           avg_agility_score + AFC )/ 5)%>%
+  rename("Large Dir. Change" = recovery_time_90deg_75percent,
+         "Agility Score" = avg_agility_score,
+         "Small Dir. Change" = direction_change_recovery_time,
+         "Angular Fatigue" = AFC,
+         "Multi-Dir. Explosiveness" = MDES)%>%
+  # dplyr::filter(team_name == "Team C")%>%
+  # dplyr::filter(Player.Id == "12")%>%
+  select(-avg_direction_change,-avg_significant_changes,-avg_movement_smoothness,
+         -xG_Against,-xG_For,-xG_pct, -max_angular_velocity,-avg_score)
+
+
+
+
+create_player_jitter <- function(jitter, highlight_player, highlight_team) {
+
+data_long <- jitter %>%
+  pivot_longer(
+    cols = c(-Player.Id, -team_name),  # Assumes 'player' is the column with player names
+    names_to = "stat",
+    values_to = "value") %>%
+  mutate(highlighted = Player.Id == highlight_player & team_name == highlight_team)
+
+
+
+ggplot(data_long, aes(x = stat, y = value)) +
+  geom_jitter(aes(color = highlighted, size = highlighted, alpha = highlighted),
+              width = 0.2) +
+  scale_color_manual(values = c("grey50", "red")) +
+  scale_size_manual(values = c(2, 8)) +
+  scale_alpha_manual(values = c(0.5, 1)) +
+  theme(legend.position = "right", 
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = "#141622"),
+        panel.background = element_rect(fill = "#141622", 
+                                        colour = "#141622",
+                                        linewidth = 2, 
+                                        linetype = "solid"),
+        panel.grid.major = element_line(size = 0.5, 
+                                        linetype = 'solid',
+                                        color = "gray"),
+        axis.title.x = element_text(size = 22, 
+                                    face = "bold", 
+                                    color = "white"),
+        axis.title.y = element_text(size = 22, 
+                                    face = "bold", 
+                                    colour = "white"),
+        axis.text.x = element_text(color = "white", size = 22),
+        axis.text.y = element_text(color = "white", size = 22),
+        plot.title = element_text(face = "bold", 
+                                  colour = "white", 
+                                  size = 14),
+        plot.subtitle = element_text(colour = "white", 
+                                     size = 10),
+        plot.caption = element_text(colour = "white", 
+                                    size = 10),
+        plot.caption.position = "plot") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "",
+       y = "Normalized Value",
+       title = "Advanced Skating Report",
+       subtitle = paste("Player", highlight_player, "on Team", highlight_team)) +
+  theme(plot.title = element_text(size = 30, face = "bold", hjust = 0.5)) +
+  theme(plot.subtitle = element_text(size = 20, hjust = 0.5))
+
+
+# # Create plot
+# ggplot(data_long, aes(x = stat, y = value)) +
+#   geom_jitter(aes(color = highlighted, size = highlighted, alpha = highlighted),
+#               width = 0.2) +
+#   scale_color_manual(values = c("grey50", "red")) +
+#   scale_size_manual(values = c(2, 8)) +
+#   scale_alpha_manual(values = c(0.5, 1)) +
+#   # theme_minimal() +
+#   theme(legend.position = "right", 
+#         panel.grid.minor = element_blank(),
+#         plot.background = element_rect(fill = "#141622"),
+#         panel.background = element_rect(fill = "#141622", 
+#                                         colour = "#141622",
+#                                         linewidth = 2, 
+#                                         linetype = "solid"),
+#         panel.grid.major = element_line(size = 0.5, 
+#                                         linetype = 'solid',
+#                                         color = "gray"),
+#         axis.title.x = element_text(size = 22, 
+#                                     face = "bold", 
+#                                     color = "white"),
+#         axis.title.y = element_text(size = 22, 
+#                                     face = "bold", 
+#                                     colour = "white"),
+#         axis.text.x = element_text(color = "white", size = 22),
+#         axis.text.y = element_text(color = "white", size = 22),
+#         plot.title = element_text(face = "bold", 
+#                                   colour = "white", 
+#                                   size = 14),
+#         plot.subtitle = element_text(colour = "white", 
+#                                      size = 10),
+#         plot.caption = element_text(colour = "white", 
+#                                     size = 10),
+#         plot.caption.position = "plot")+
+#   theme(legend.position = "none",
+#         axis.text.x = element_text(angle = 45, hjust = 1)) +
+#   labs(x = "",
+#        y = "Normalized Value",
+#        title = "Advanced Skating Report",
+#        subtitle = "Player 10 on Team H") +
+#   theme(plot.title = element_text(size = 30, face = "bold", hjust = 0.5))+
+#   theme(plot.subtitle = element_text(size = 20, hjust = 0.5))
+
+}
+
+
+# Example usage:
+ player_plot <- create_player_jitter(jitter, "90","Team C")
